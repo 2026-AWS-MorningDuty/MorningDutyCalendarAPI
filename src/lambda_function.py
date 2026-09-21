@@ -53,7 +53,7 @@ def create_schedule_service():
     return ScheduleService(
         users,
         CalendarRepository(_dynamodb.Table(config.calendar_table_name), _transaction_client),
-        notifications=NotificationService(users, get_ses_client, config.ses_from_email),
+        notifications=NotificationService(users, get_ses_client, config.ses_from_email, config.calendar_url),
     )
 
 

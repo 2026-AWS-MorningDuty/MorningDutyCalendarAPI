@@ -34,8 +34,8 @@ def test_both_recipients_receive_their_correct_new_dates(mailer, preference):
     assert users.find_by_user_id.call_args_list == [call("u1"), call("u2")]
     assert ses.send_email.call_count == 2
     for invocation, user, old, new in zip(ses.send_email.call_args_list,
-                                         ("u1", "u2"), ("2026-09-24", "2026-10-01"),
-                                         ("2026-10-01", "2026-09-24")):
+                                         ("u1", "u2"), ("2026年09月24日 木曜日", "2026年10月01日 木曜日"),
+                                         ("2026年10月01日 木曜日", "2026年09月24日 木曜日")):
         request = invocation.kwargs
         assert request["Source"] == "sender@example.com"
         assert request["Destination"] == {"ToAddresses": [f"{user}@example.com"]}
@@ -44,6 +44,7 @@ def test_both_recipients_receive_their_correct_new_dates(mailer, preference):
         assert body["Charset"] == "UTF-8"
         assert f"変更前: {old}" in body["Data"]
         assert f"変更後: {new}" in body["Data"]
+        assert body["Data"].endswith("https://d88l94lniveng.cloudfront.net/\n")
 
 
 def test_ses_rejection_does_not_stop_second_recipient(mailer, caplog):
@@ -111,6 +112,7 @@ def test_factory_wires_lazy_reused_ses_client(monkeypatch):
     monkeypatch.setenv("CALENDAR_TABLE_NAME", "Calendar")
     monkeypatch.setenv("AWS_REGION", "ap-northeast-1")
     monkeypatch.setenv("SES_FROM_EMAIL", "sender@example.com")
+    monkeypatch.setenv("CALENDAR_URL", "https://calendar.example.com/")
     monkeypatch.setattr(lambda_function, "_dynamodb", Mock())
     monkeypatch.setattr(lambda_function, "_transaction_client", Mock())
     monkeypatch.setattr(lambda_function, "_ses_client", None)
@@ -118,8 +120,44 @@ def test_factory_wires_lazy_reused_ses_client(monkeypatch):
     monkeypatch.setattr(lambda_function.boto3, "client", client_factory)
     service = lambda_function.create_schedule_service()
     assert service.notifications.from_email == "sender@example.com"
+    assert service.notifications.calendar_url == "https://calendar.example.com/"
     assert Config.from_env().ses_from_email == "sender@example.com"
     client_factory.assert_not_called()
     first = service.notifications.ses_client_factory()
     assert service.notifications.ses_client_factory() is first
     client_factory.assert_called_once_with("ses", region_name="ap-northeast-1")
+
+
+@pytest.mark.parametrize("configured", [None, "", "   "])
+def test_calendar_url_defaults_when_unset_or_blank(monkeypatch, configured):
+    monkeypatch.setenv("USERS_TABLE_NAME", "Users")
+    monkeypatch.setenv("CALENDAR_TABLE_NAME", "Calendar")
+    if configured is None:
+        monkeypatch.delenv("CALENDAR_URL", raising=False)
+    else:
+        monkeypatch.setenv("CALENDAR_URL", configured)
+    assert Config.from_env().calendar_url == "https://d88l94lniveng.cloudfront.net/"
+
+
+def test_requested_dates_and_custom_link_in_email(mailer):
+    service, _, ses = mailer
+    service.calendar_url = "https://calendar.example.com/"
+    service.send_swap_notifications("u1", "u2", "2026-09-28", "2026-09-29")
+    assert ses.send_email.call_args_list[0].kwargs["Message"]["Body"]["Text"]["Data"] == (
+        "朝礼の担当日が変更されました。\n\n"
+        "変更前: 2026年09月28日 月曜日\n"
+        "変更後: 2026年09月29日 火曜日\n\n"
+        "最新の予定はカレンダーでご確認ください。\n"
+        "https://calendar.example.com/\n"
+    )
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("2026-09-23", "2026年09月23日 水曜日"),
+    ("2026-09-25", "2026年09月25日 金曜日"),
+    ("2026-09-26", "2026年09月26日 土曜日"),
+    ("2026-09-27", "2026年09月27日 日曜日"),
+    ("2028-02-29", "2028年02月29日 火曜日"),
+])
+def test_date_format(value, expected):
+    assert NotificationService.format_date(value) == expected

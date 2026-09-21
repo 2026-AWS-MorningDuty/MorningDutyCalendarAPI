@@ -31,6 +31,7 @@ Python 3.12의 `GET /calendar?year=2026&month=9` 구현입니다.
 - 일정 교환에는 Calendar 테이블의 `dynamodb:GetItem`, `dynamodb:UpdateItem` 권한이 필요합니다.
 - 변경 이메일에는 Users 테이블의 `dynamodb:GetItem`, 발신 자격 증명에 대한 `ses:SendEmail` 권한이 필요합니다.
 - `SES_FROM_EMAIL`은 해당 리전에서 SES 발신에 사용할 수 있는 주소로 설정합니다. 누락되면 교환은 성공하고 이메일 실패가 로그에 기록됩니다.
+- 변경 이메일 날짜는 `2026年09月28日 月曜日` 형식이며, 마지막에 캘린더 링크를 표시합니다. 선택 환경변수 `CALENDAR_URL`로 URL을 지정할 수 있고, 미설정 또는 공백이면 `https://d88l94lniveng.cloudfront.net/`를 사용합니다.
 - 날짜 기준은 `Asia/Tokyo`입니다. 후보는 실제 오늘이 속한 월과 다음 월에서 조회하고, 월 이동 가능 여부는 요청 월 기준입니다.
 - 성공 응답은 명세의 `year`, `month`, `currentUser`, `navigation`, `days`, `changeCandidates`를 직접 반환합니다.
 

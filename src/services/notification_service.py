@@ -1,14 +1,24 @@
+from datetime import date
+
 from botocore.exceptions import ClientError
 
+from config import DEFAULT_CALENDAR_URL
 from logger import logger
 from utils.response import APIError
 
 
 class NotificationService:
-    def __init__(self, users, ses_client_factory=None, from_email=None):
+    def __init__(self, users, ses_client_factory=None, from_email=None, calendar_url=DEFAULT_CALENDAR_URL):
         self.users = users
         self.ses_client_factory = ses_client_factory
         self.from_email = from_email
+        self.calendar_url = calendar_url
+
+    @staticmethod
+    def format_date(value):
+        assigned_date = date.fromisoformat(value)
+        weekday = "月火水木金土日"[assigned_date.weekday()]
+        return f"{assigned_date:%Y年%m月%d日} {weekday}曜日"
 
     def set_notification(self, sub, enabled):
         user = self.users.find_by_cognito_sub(sub)
@@ -47,9 +57,10 @@ class NotificationService:
                         "Body": {"Text": {
                             "Data": (
                                 "朝礼の担当日が変更されました。\n\n"
-                                f"変更前: {previous_date}\n"
-                                f"変更後: {assigned_date}\n\n"
+                                f"変更前: {self.format_date(previous_date)}\n"
+                                f"変更後: {self.format_date(assigned_date)}\n\n"
                                 "最新の予定はカレンダーでご確認ください。\n"
+                                f"{self.calendar_url}\n"
                             ),
                             "Charset": "UTF-8",
                         }},
