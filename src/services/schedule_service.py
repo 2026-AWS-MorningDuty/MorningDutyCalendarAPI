@@ -5,6 +5,7 @@ from botocore.exceptions import ClientError
 
 from logger import logger
 from services.calendar_service import tokyo_today
+from utils.performance import measure_perf
 from utils.response import APIError
 
 
@@ -16,25 +17,31 @@ class ScheduleService:
         self.notifications = notifications
 
     def swap(self, sub, my_date, target_date):
-        user = self.users.find_by_cognito_sub(sub)
+        with measure_perf("POST /schedule/swap", "get_current_user"):
+            user = self.users.find_by_cognito_sub(sub)
         if user is None:
             raise APIError(404, "USER_NOT_FOUND", "User was not found.")
         user_id = user["userId"]
         logger.info("event=schedule_swap_requested userId=%s myDate=%s targetDate=%s", user_id, my_date, target_date)
         try:
-            if my_date == target_date:
-                raise APIError(400, "SAME_DATE", "Dates must be different.")
-            my_item = self.calendar.get_date(my_date)
-            target_item = self.calendar.get_date(target_date)
-            self.validate_day(my_date, my_item)
-            self.validate_day(target_date, target_item)
-            if my_item["assignedUserId"] != user_id:
-                raise APIError(403, "NOT_YOUR_SCHEDULE", "myDate must be assigned to the current user.")
-            if target_item["assignedUserId"] == user_id:
-                raise APIError(400, "OWN_TARGET_SCHEDULE", "targetDate must be assigned to another user.")
-            if date.fromisoformat(target_date) < self.today():
-                raise APIError(400, "PAST_TARGET_DATE", "targetDate must not be in the past.")
-            self.calendar.swap_assignments(my_item, target_item)
+            with measure_perf("POST /schedule/swap", "validate_swap"):
+                if my_date == target_date:
+                    raise APIError(400, "SAME_DATE", "Dates must be different.")
+            with measure_perf("POST /schedule/swap", "get_my_schedule"):
+                my_item = self.calendar.get_date(my_date)
+            with measure_perf("POST /schedule/swap", "get_target_schedule"):
+                target_item = self.calendar.get_date(target_date)
+            with measure_perf("POST /schedule/swap", "validate_swap"):
+                self.validate_day(my_date, my_item)
+                self.validate_day(target_date, target_item)
+                if my_item["assignedUserId"] != user_id:
+                    raise APIError(403, "NOT_YOUR_SCHEDULE", "myDate must be assigned to the current user.")
+                if target_item["assignedUserId"] == user_id:
+                    raise APIError(400, "OWN_TARGET_SCHEDULE", "targetDate must be assigned to another user.")
+                if date.fromisoformat(target_date) < self.today():
+                    raise APIError(400, "PAST_TARGET_DATE", "targetDate must not be in the past.")
+            with measure_perf("POST /schedule/swap", "dynamodb_transaction"):
+                self.calendar.swap_assignments(my_item, target_item)
         except ClientError as error:
             code = error.response["Error"]["Code"]
             reasons = error.response.get("CancellationReasons", [])

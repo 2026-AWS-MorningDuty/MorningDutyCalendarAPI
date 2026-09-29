@@ -5,6 +5,7 @@ import jpholiday
 
 from logger import logger
 from utils.date_utils import DAY_NAMES, adjacent_month, month_dates, month_key
+from utils.performance import measure_perf
 from utils.response import APIError
 
 
@@ -19,36 +20,48 @@ class CalendarService:
         self.today = today
 
     def get_calendar(self, sub, year, month):
-        user = self.users.find_by_cognito_sub(sub)
+        with measure_perf("GET /calendar", "get_current_user"):
+            user = self.users.find_by_cognito_sub(sub)
         if user is None:
             raise APIError(404, "USER_NOT_FOUND", "User was not found.")
         user_id = user["userId"]
         logger.info("event=calendar_requested userId=%s year=%s month=%s", user_id, year, month)
         previous = adjacent_month(year, month, -1)
         following = adjacent_month(year, month, 1)
-        previous_available = bool(previous and self.calendar.month_exists(month_key(*previous)))
-        next_available = bool(following and self.calendar.month_exists(month_key(*following)))
-        days = self.build_days(year, month, self.calendar.list_month(month_key(year, month)), user_id)
+        with measure_perf("GET /calendar", "query_previous_month"):
+            previous_available = bool(previous and self.calendar.month_exists(month_key(*previous)))
+        with measure_perf("GET /calendar", "query_next_month"):
+            next_available = bool(following and self.calendar.month_exists(month_key(*following)))
+        with measure_perf("GET /calendar", "query_calendar"):
+            items = self.calendar.list_month(month_key(year, month))
+        with measure_perf("GET /calendar", "build_calendar"):
+            days = self.build_days(year, month, items, user_id)
         today = self.today()
         candidate_month = (today.year, today.month)
         if candidate_month == (year, month):
             candidate_days = list(days)
             candidate_next, candidate_next_available = following, next_available
         else:
-            candidate_days = self.build_days(*candidate_month, self.calendar.list_month(month_key(*candidate_month)), user_id)
+            with measure_perf("GET /calendar", "query_change_candidates"):
+                candidate_items = self.calendar.list_month(month_key(*candidate_month))
+            with measure_perf("GET /calendar", "build_calendar"):
+                candidate_days = self.build_days(*candidate_month, candidate_items, user_id)
             candidate_next = adjacent_month(*candidate_month, 1)
-            candidate_next_available = bool(candidate_next and self.calendar.month_exists(month_key(*candidate_next)))
+            with measure_perf("GET /calendar", "query_change_candidates"):
+                candidate_next_available = bool(candidate_next and self.calendar.month_exists(month_key(*candidate_next)))
         if candidate_next_available:
-            candidate_days.extend(self.build_days(
-                *candidate_next, self.calendar.list_month(month_key(*candidate_next)), user_id,
-            ))
-        candidates = [
-            {key: day[key] for key in ("date", "dayOfWeek", "assignedUserId", "assignedUserName")}
-            for day in candidate_days
-            if day["assignedUserId"] and not day["mine"]
-            and day["dayOfWeek"] not in ("SAT", "SUN")
-            and not day["holiday"] and day["date"] >= today.isoformat()
-        ]
+            with measure_perf("GET /calendar", "query_change_candidates"):
+                next_items = self.calendar.list_month(month_key(*candidate_next))
+            with measure_perf("GET /calendar", "build_calendar"):
+                candidate_days.extend(self.build_days(*candidate_next, next_items, user_id))
+        with measure_perf("GET /calendar", "build_calendar"):
+            candidates = [
+                {key: day[key] for key in ("date", "dayOfWeek", "assignedUserId", "assignedUserName")}
+                for day in candidate_days
+                if day["assignedUserId"] and not day["mine"]
+                and day["dayOfWeek"] not in ("SAT", "SUN")
+                and not day["holiday"] and day["date"] >= today.isoformat()
+            ]
         return {
             "year": year, "month": month,
             "currentUser": {key: user[key] for key in ("userId", "name", "emailNotification")},

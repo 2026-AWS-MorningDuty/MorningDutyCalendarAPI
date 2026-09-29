@@ -4,6 +4,7 @@ from botocore.exceptions import ClientError
 
 from config import DEFAULT_CALENDAR_URL
 from logger import logger
+from utils.performance import measure_perf
 from utils.response import APIError
 
 
@@ -21,12 +22,14 @@ class NotificationService:
         return f"{assigned_date:%Y年%m月%d日} {weekday}曜日"
 
     def set_notification(self, sub, enabled):
-        user = self.users.find_by_cognito_sub(sub)
+        with measure_perf("PATCH /me/notification", "get_current_user"):
+            user = self.users.find_by_cognito_sub(sub)
         if user is None:
             raise APIError(404, "USER_NOT_FOUND", "User was not found.")
         user_id = user["userId"]
         try:
-            self.users.set_email_notification(user_id, enabled)
+            with measure_perf("PATCH /me/notification", "update_notification"):
+                self.users.set_email_notification(user_id, enabled)
         except ClientError as error:
             if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 raise APIError(404, "USER_NOT_FOUND", "User was not found.") from error
@@ -41,7 +44,8 @@ class NotificationService:
             (target_user_id, target_date, my_date),
         ):
             try:
-                user = self.users.find_by_user_id(user_id)
+                with measure_perf("POST /schedule/swap", "get_notification_users"):
+                    user = self.users.find_by_user_id(user_id)
                 if user is None:
                     raise ValueError("Notification user was not found")
                 email = user.get("email")
@@ -49,23 +53,24 @@ class NotificationService:
                     raise ValueError("Notification user has no email address")
                 if not self.from_email:
                     raise ValueError("SES_FROM_EMAIL is not configured")
-                self.ses_client_factory().send_email(
-                    Source=self.from_email,
-                    Destination={"ToAddresses": [email]},
-                    Message={
-                        "Subject": {"Data": "朝礼担当日の変更のお知らせ", "Charset": "UTF-8"},
-                        "Body": {"Text": {
-                            "Data": (
-                                "朝礼の担当日が変更されました。\n\n"
-                                f"変更前: {self.format_date(previous_date)}\n"
-                                f"変更後: {self.format_date(assigned_date)}\n\n"
-                                "最新の予定はカレンダーでご確認ください。\n"
-                                f"{self.calendar_url}\n"
-                            ),
-                            "Charset": "UTF-8",
-                        }},
-                    },
-                )
+                with measure_perf("POST /schedule/swap", "send_email"):
+                    self.ses_client_factory().send_email(
+                        Source=self.from_email,
+                        Destination={"ToAddresses": [email]},
+                        Message={
+                            "Subject": {"Data": "朝礼担当日の変更のお知らせ", "Charset": "UTF-8"},
+                            "Body": {"Text": {
+                                "Data": (
+                                    "朝礼の担当日が変更されました。\n\n"
+                                    f"変更前: {self.format_date(previous_date)}\n"
+                                    f"変更後: {self.format_date(assigned_date)}\n\n"
+                                    "最新の予定はカレンダーでご確認ください。\n"
+                                    f"{self.calendar_url}\n"
+                                ),
+                                "Charset": "UTF-8",
+                            }},
+                        },
+                    )
                 logger.info(
                     "event=schedule_swap_email_sent userId=%s myDate=%s targetDate=%s result=success",
                     user_id, my_date, target_date,

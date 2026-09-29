@@ -2,6 +2,7 @@ import base64
 import binascii
 import json
 import re
+import time
 from datetime import date
 
 import boto3
@@ -15,6 +16,7 @@ from services.notification_service import NotificationService
 from services.schedule_service import ScheduleService
 from utils.auth import get_cognito_sub
 from utils.date_utils import parse_year_month
+from utils.performance import measure_perf
 from utils.response import APIError, error_response, response
 
 # Reuse the AWS resource across invocations; never cache users or calendar data.
@@ -98,22 +100,37 @@ def parse_swap_body(event):
 
 
 def lambda_handler(event, context):
+    total_started_at = time.perf_counter()
+    route = event.get("routeKey")
     try:
-        route = event.get("routeKey")
         if route not in ("GET /calendar", "PATCH /me/notification", "POST /schedule/swap"):
             raise APIError(404, "NOT_FOUND", "Route was not found.")
         sub = get_cognito_sub(event)
         if route == "POST /schedule/swap":
-            my_date, target_date = parse_swap_body(event)
-            return response(200, create_schedule_service().swap(sub, my_date, target_date))
+            with measure_perf(route, "validate_request"):
+                my_date, target_date = parse_swap_body(event)
+            payload = create_schedule_service().swap(sub, my_date, target_date)
+            with measure_perf(route, "build_response"):
+                return response(200, payload)
         if route == "PATCH /me/notification":
-            enabled = parse_notification_body(event)
-            return response(200, create_notification_service().set_notification(sub, enabled))
-        year, month = parse_year_month(event.get("queryStringParameters"))
-        return response(200, create_service().get_calendar(sub, year, month))
+            with measure_perf(route, "validate_request"):
+                enabled = parse_notification_body(event)
+            payload = create_notification_service().set_notification(sub, enabled)
+            with measure_perf(route, "build_response"):
+                return response(200, payload)
+        with measure_perf(route, "validate_request"):
+            year, month = parse_year_month(event.get("queryStringParameters"))
+        payload = create_service().get_calendar(sub, year, month)
+        with measure_perf(route, "build_response"):
+            return response(200, payload)
     except APIError as error:
         return error_response(error)
     except Exception:
         failure_event = {"PATCH /me/notification": "notification_update_failed", "POST /schedule/swap": "schedule_swap_failed"}.get(event.get("routeKey"), "calendar_failed")
         logger.exception("event=%s result=failure", failure_event)
         return error_response(APIError(500, "INTERNAL_SERVER_ERROR", "An internal error occurred."))
+    finally:
+        logger.info(
+            "[PERF] route=%s step=total duration_ms=%.1f",
+            route, (time.perf_counter() - total_started_at) * 1000,
+        )
