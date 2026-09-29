@@ -45,6 +45,18 @@ python3.12 -m venv .venv
 
 테스트는 Repository 경계를 모킹하므로 AWS 자격 증명이나 실제 테이블이 필요 없습니다.
 
+## 성능 로그
+
+CloudWatch Logs에서 `[PERF]` 또는 `[PERF] route=GET /calendar`로 검색합니다.
+로그 형식은 `[PERF] route=<ROUTE> step=<STEP> duration_ms=<밀리초>`입니다.
+세 API 모두 성공·실패 시 `step=total`을 기록하며, Handler 내부 시간만 측정하므로 Cold Start 초기화 시간은 Lambda 기본 로그와 함께 확인합니다.
+
+DB 접근, 검증, 캘린더 계산, 응답 직렬화(`build_response`), SES 발송을 각각 측정합니다.
+후보 조회(`query_change_candidates`), 날짜 계산(`build_calendar`), 교체 검증(`validate_swap`)은 실행 구간마다 같은 step이 여러 번 기록될 수 있습니다.
+알림 사용자 조회(`get_notification_users`)와 SES 발송(`send_email`)은 수신자별로 기록합니다.
+실행하지 않은 구간은 기록하지 않으며, 같은 step의 전체 비용은 해당 요청 내 기록을 합산해서 확인합니다.
+성능 로그에는 route, step, duration_ms만 포함합니다.
+
 ## 확정 정책
 
 - `hasSchedule`은 실제 담당자 배정 여부입니다. DB Item이 있어도 `assignedUserId`가 없거나 null/빈 값이면 `false`입니다.
